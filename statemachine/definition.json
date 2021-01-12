@@ -1,0 +1,87 @@
+{
+    "Comment": "State machine that orchestrates the execution of Indexing Audio lambda Functions",
+    "StartAt": "startTranscribeJob",
+    "States": {
+        "startTranscribeJob": {
+            "Type": "Task",
+            "Resource": "${StartTranscribeFunctionArn}",
+            "Next": "getTranscribeJobStatus"
+        },
+        "getTranscribeJobStatus": {
+            "Type": "Task",
+            "Resource": "${GetTranscribeStatusFunctionArn}",
+            "Next": "isTranscribeJobComplete?"
+        },
+        "isTranscribeJobComplete?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.transcribe.transcriptionJobStatus",
+                    "StringEquals": "COMPLETED",
+                    "Next": "getTranscribeTranscript"
+                },
+                {
+                  "Variable": "$.transcribe.transcriptionJobStatus",
+                  "StringEquals": "FAILED",
+                  "Next": "finishWorkflow"
+                 }
+            ],
+            "Default": "waitTranscribeJob"
+        },
+        "waitTranscribeJob": {
+            "Type": "Wait",
+            "Seconds": 60,
+            "Next": "getTranscribeJobStatus"
+        },
+        "getTranscribeTranscript": {
+            "Type": "Task",
+            "Resource": "${GetTranscribeTranscriptFunctionArn}",
+            "Next": "startComprehendJob"
+        },
+        "startComprehendJob": {
+            "Type": "Task",
+            "Resource": "${StartComprehendFunctionArn}",
+            "Next": "getComprehendJobsAsync"
+        },
+        "getComprehendJobsAsync": {
+            "Type": "Task",
+            "Resource": "${GetComprehendStatusFunctionArn}",
+            "Next": "isComprehendJobsAsyncCompleted?"
+        },
+        "isComprehendJobsAsyncCompleted?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.comprehendJobsStatus",
+                    "StringEquals": "COMPLETED",
+                    "Next": "extractComprehendOutputFiles"
+                },
+                {
+                  "Variable": "$.comprehendJobsStatus",
+                  "StringEquals": "FAILED",
+                  "Next": "finishWorkflow"
+                 }
+            ],
+            "Default": "waitComprehendJobs"
+        },
+      "waitComprehendJobs": {
+            "Type": "Wait",
+            "Seconds": 120,
+            "Next": "getComprehendJobsAsync"
+        },
+        "extractComprehendOutputFiles": {
+            "Type": "Task",
+            "Resource": "${GetComprehendFilesFunctionArn}",
+            "Next": "loadES"
+        },
+        "loadES": {
+            "Type": "Task",
+            "Resource": "${LoadESFunctionArn}",
+            "Next": "finishWorkflow"
+        },
+        "finishWorkflow": {
+            "Type": "Pass",
+            "End": true
+        }
+   }
+}

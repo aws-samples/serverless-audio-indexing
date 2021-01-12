@@ -1,0 +1,492 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: Indexing Audio files with Amazon Transcribe and Amazon ElasticSearch
+
+Parameters:
+  ElasticsearchDomainName:
+    Type: String
+    AllowedPattern: '[a-z][a-z0-9]*'
+    Description: Name of Elasticsearch domain for log [a-z][a-z0-9]*
+
+  SourceAudioLanguage:
+    Type: String
+    Default: "en-US"
+    Description: Source Audio - Language
+
+Resources:
+# ***************************************************************************************************************************
+# 1 - Main AWS Resources
+#               Main S3 Bucket
+#               Transcribe S3 Bucket
+#               ElasticSearch Cluster
+#               Amazon Cognito User Pool
+# ***************************************************************************************************************************
+  MainS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  TranscribeS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${ElasticsearchDomainName}_kibana
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          DeveloperOnlyAttribute: false
+          Mutable: true
+          Required: true
+ 
+  UserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName:
+        Fn::Sub: ${ElasticsearchDomainName}_kibana_access_group
+      Precedence: 0
+      UserPoolId:
+        Ref: UserPool
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties: 
+      Domain:
+        Fn::Sub: "${ElasticsearchDomainName}-userpooldomain-${AWS::AccountId}"
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName:
+        Fn::Sub: ${ElasticsearchDomainName}-client
+      GenerateSecret: false
+      UserPoolId:
+        Ref: UserPool
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: 
+        Fn::Sub: ${ElasticsearchDomainName}-Identity
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+      - ClientId:
+          Ref: UserPoolClient
+        ProviderName:
+          Fn::GetAtt:
+          - UserPool
+          - ProviderName
+ 
+  AuthenticatedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "es:ESHttp*"
+            Resource:
+              - "*"
+
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "sts:AssumeRoleWithWebIdentity"
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              ForAnyValue:StringLike:
+                "cognito-identity.amazonaws.com:amr": authenticated
+      ManagedPolicyArns: 
+        - !Ref AuthenticatedPolicy
+        
+  RoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthenticatedRole.Arn
+     
+  ElasticsearchDomain: 
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      DomainName: !Ref ElasticsearchDomainName
+      ElasticsearchVersion: "7.8"
+      ElasticsearchClusterConfig: 
+        InstanceCount: 1
+        InstanceType: "r5.large.elasticsearch"
+      EBSOptions: 
+        EBSEnabled: true
+        Iops: 0
+        VolumeSize: 10
+        VolumeType: "gp2"
+      CognitoOptions:
+        Enabled: true
+        IdentityPoolId: !Ref IdentityPool
+        RoleArn: !GetAtt CognitoESAccessRole.Arn
+        UserPoolId: !Ref UserPool
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+        - Action: es:*
+          Principal:
+            AWS:
+              Fn::Sub:
+              - arn:aws:sts::${AWS::AccountId}:assumed-role/${AuthRole}/CognitoIdentityCredentials
+              - AuthRole:
+                  Ref: AuthenticatedRole
+          Effect: Allow
+          Resource:
+            Fn::Sub: arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${ElasticsearchDomainName}/*
+
+  CognitoESAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonESCognitoAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: es.amazonaws.com
+          Action:
+          - sts:AssumeRole
+# ***************************************************************************************************************************
+# 2 - Triggering Indexing Process
+#               Raw S3 bucket
+#               Lambda Function that triggers the State Machine
+# ***************************************************************************************************************************
+  RawS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  StartStateMachineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/start_stateMachine/
+      Description: Lambda Function that starts Indexing Audio State Machine
+      MemorySize: 256
+      Runtime: python3.8
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref IndexingAudioStateMachine
+      Events:
+        S3Mp3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawS3Bucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".mp3"
+        S3Mp4Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawS3Bucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: ".mp4"
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref IndexingAudioStateMachine
+
+# ***************************************************************************************************************************
+# 3 - Indexing Process
+#               State Machine
+#               Lambdas Functions
+# ***************************************************************************************************************************
+  IndexingAudioStateMachine:
+    Type: AWS::Serverless::StateMachine 
+    Properties:
+      DefinitionUri: statemachine/definition.json
+      DefinitionSubstitutions:
+        StartTranscribeFunctionArn: !GetAtt StartTranscribeFunction.Arn
+        GetTranscribeStatusFunctionArn: !GetAtt GetTranscribeStatusFunction.Arn
+        GetTranscribeTranscriptFunctionArn: !GetAtt GetTranscribeTranscriptFunction.Arn
+        StartComprehendFunctionArn: !GetAtt StartComprehendFunction.Arn
+        GetComprehendStatusFunctionArn: !GetAtt GetComprehendStatusFunction.Arn
+        GetComprehendFilesFunctionArn: !GetAtt GetComprehendFilesFunction.Arn
+        LoadESFunctionArn: !GetAtt LoadESFunction.Arn
+      Type: STANDARD
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StartTranscribeFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GetTranscribeStatusFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GetTranscribeTranscriptFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StartComprehendFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GetComprehendStatusFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GetComprehendFilesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref LoadESFunction
+
+  StartTranscribeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/start_transcribe_job/
+      Description: Lambda Function that starts the Amazon Transcribe Job 
+      MemorySize: 256
+      Runtime: python3.8
+      Environment:
+        Variables:
+          TRANSCRIBE_BUCKET_NAME: !Ref TranscribeS3Bucket
+          SOURCE_AUDIO_LANGUAGE: !Ref SourceAudioLanguage
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - transcribe:StartTranscriptionJob
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - S3:Get*
+                - S3:List*
+                - S3:PutObject
+                - S3:GetObject
+                - S3:DeleteObject
+              Resource:
+                Fn::Sub: "arn:aws:s3:::${AWS::StackName}*"
+               
+  GetTranscribeStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/get_transcribe_job_status/
+      Description: Lambda Function that gets the Amazon Transcribe Status
+      MemorySize: 256
+      Runtime: python3.8
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - transcribe:GetTranscriptionJob
+              Resource: "*"
+
+  GetTranscribeTranscriptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/get_transcribe_transcript/
+      Description: Lambda Function that get the transcript file generated by Amazon Transcribe 
+      MemorySize: 256
+      Runtime: python3.8
+      Environment:
+        Variables:
+          MAIN_BUCKET_NAME: !Ref MainS3Bucket
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - S3:Get*
+                - S3:List*
+                - S3:PutObject
+                - S3:GetObject
+                - S3:DeleteObject
+              Resource:
+                Fn::Sub: "arn:aws:s3:::${AWS::StackName}*"
+
+  StartComprehendFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/start_comprehend_job/
+      Description: Lambda Function that starts Amazon Comprehend Jobs
+      MemorySize: 256
+      Runtime: python3.8
+      Timeout: 120
+      Environment:
+        Variables:
+          MAIN_BUCKET_NAME: !Ref MainS3Bucket
+          COMPREHEND_SERVICE_ROLE_ARN: !GetAtt ComprehendServiceRole.Arn
+          SOURCE_AUDIO_LANGUAGE: !Ref SourceAudioLanguage
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:StartEntitiesDetectionJob
+                - comprehend:StartKeyPhrasesDetectionJob
+                - comprehend:StartSentimentDetectionJob
+                - iam:GetRole
+                - iam:PassRole
+              Resource: "*"
+
+  ComprehendServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "sts:AssumeRole"
+            Principal:
+              Service: 
+                - comprehend.amazonaws.com
+      Policies:
+        - PolicyName: "AmazonComprehendServiceRole"
+          PolicyDocument:
+            Version: '2012-10-17' # Policy Document
+            Statement:
+              - Effect: Allow
+                Action:
+                  - S3:Get*
+                  - S3:List*
+                  - S3:PutObject
+                  - S3:GetObject
+                  - S3:DeleteObject
+                Resource:
+                  Fn::Sub: "arn:aws:s3:::${AWS::StackName}*"
+
+  GetComprehendStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/get_comprehend_job_status/
+      Description: Lambda Function that gets the Amazon Comprehend Jobs Status
+      MemorySize: 256
+      Runtime: python3.8
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - comprehend:DescribeEntitiesDetectionJob
+                - comprehend:DescribeKeyPhrasesDetectionJob
+                - comprehend:DescribeSentimentDetectionJob
+              Resource: "*"
+
+  GetComprehendFilesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/get_comprehend_files/
+      Description: Lambda Function that decompress the files produced by Amazon Comprehend
+      MemorySize: 256
+      Timeout: 120
+      Runtime: python3.8
+      Environment:
+        Variables:
+          MAIN_BUCKET_NAME: !Ref MainS3Bucket
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - S3:Get*
+                - S3:List*
+                - S3:PutObject
+                - S3:GetObject
+                - S3:DeleteObject
+              Resource:
+                Fn::Sub: "arn:aws:s3:::${AWS::StackName}*"
+
+  LoadESFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/load_es/
+      Description: Lambda Function that loads data into ElasticSearch
+      MemorySize: 256
+      Timeout: 120
+      Runtime: python3.8
+      Environment:
+        Variables:
+          REGION: !Ref "AWS::Region"
+          HOST: !GetAtt ElasticsearchDomain.DomainEndpoint
+          MAIN_BUCKET_NAME: !Ref MainS3Bucket
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+          - Effect: Allow
+            Action: "sts:AssumeRoleWithWebIdentity"
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              ForAnyValue:StringLike:
+                "cognito-identity.amazonaws.com:amr": authenticated
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - es:*
+              Resource: "*"
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                - S3:Get*
+                - S3:List*
+                - S3:PutObject
+                - S3:GetObject
+                - S3:DeleteObject
+              Resource:
+                Fn::Sub: "arn:aws:s3:::${AWS::StackName}*"
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPool"
+  UserPoolArn:
+    Value: !GetAtt UserPool.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UserPoolArn"
+  IdentityPoolId:
+    Value: !Ref IdentityPool
+    Export:
+      Name: !Sub "${AWS::StackName}-IdentityPool"
