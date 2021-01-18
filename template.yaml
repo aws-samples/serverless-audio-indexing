@@ -7,7 +7,7 @@ Parameters:
   ElasticsearchDomainName:
     Type: String
     AllowedPattern: '[a-z][a-z0-9]*'
-    Description: Name of Elasticsearch domain for log [a-z][a-z0-9]*
+    Description: Name of Elasticsearch domain [a-z][a-z0-9]*
 
   SourceAudioLanguage:
     Type: String
@@ -480,13 +480,36 @@ Resources:
 Outputs:
   UserPoolId:
     Value: !Ref UserPool
+    Description: "Cognito User pool Id"
     Export:
       Name: !Sub "${AWS::StackName}-UserPool"
   UserPoolArn:
     Value: !GetAtt UserPool.Arn
+    Description: "User Pool ARN"
     Export:
       Name: !Sub "${AWS::StackName}-UserPoolArn"
   IdentityPoolId:
     Value: !Ref IdentityPool
+    Description: "Cognito Identity Pool Id"
     Export:
       Name: !Sub "${AWS::StackName}-IdentityPool"
+  RawBucket:
+    Value: !Ref RawS3Bucket
+    Description: "Bucket used to start the workflow"
+    Export:
+      Name: !Sub "${AWS::StackName}-RawS3Bucket"
+  MainBucket:
+    Value: !Ref MainS3Bucket
+    Description: "Main Bucket used by the workflow"
+    Export:
+      Name: !Sub "${AWS::StackName}-MainS3Bucket"
+  TranscribeS3Bucket:
+    Value: !Ref TranscribeS3Bucket
+    Description: "Bucket that stores the Trancribe Jobs output"
+    Export:
+      Name: !Sub "${AWS::StackName}-TranscribeS3Bucket"
+  StepFunction:
+    Value: !Ref IndexingAudioStateMachine
+    Description: "Indexing Audio Workflow"
+    Export:
+      Name: !Sub "${AWS::StackName}-IndexingAudioStateMachine"
