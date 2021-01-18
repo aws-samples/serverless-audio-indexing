@@ -35,7 +35,7 @@ ElasticsearchDomainName     |Name used on the domain of the Elasticsearch cluste
 SourceAudioLanguage       |Source Language of the audio files                                          | Supported Values: <br />‘de-DE’ German <br />‘de-CH’ Swiss German <br />‘en-AU’ Australian English <br />‘en-GB’ British English <br />‘en-IN’ Indian English <br />‘en-IE’ Irish English <br />‘en-AB’: Scottish English <br />‘en-US’: US English <br />‘en-WL’ Welsh English <br />‘es-ES’ Spanish <br />‘es-US’ US Spanish <br />‘it-IT’ Italian <br />‘pt-PT’ Portuguese <br />‘pt-BR’ Brazilian Portuguese <br />‘fr-FR’ French <br />‘fr-CA’ Canadian French <br />‘ja-JP’ Japanese <br />‘ko-KR’ Korean <br />‘hi-IN’ Hindi <br />‘ar-SA’ Arabic <br />‘zh-CN’ Chinese (simplified)                                                                   |                               
 
 ### Running the workflow
-After the launch of the stack, the following outputs will be generated: `RawBucket`, `UserPoolId`, `UserPoolArn`, `IdentityPoolId`, `RawBucket`, `MainBucket`, `TranscribeS3Bucket` and `StepFunction`. To start the workflow, is necessary to upload a `.mp3` or `.mp4` file on the  `RawBucket`, doing so, the workflow will be started.
+After the launch of the stack, the following outputs will be generated: `RawBucket`, `UserPoolId`, `UserPoolArn`, `IdentityPoolId`, `RawBucket`, `MainBucket`, `TranscribeS3Bucket` and `StepFunction`. To start the workflow, it's necessary to upload a `.mp3` or `.mp4` file on the  `RawBucket`, doing so, the workflow will be started.
 
 We can track the execution of the workflow on the `StepFunction` resource:
 <img src="images/stepfunctions.png"/>
