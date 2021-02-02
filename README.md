@@ -1,6 +1,6 @@
 # Serverless Audio Indexing
 
-This repository contains the code supporting the blog post "Indexing Audio with Amazon Transcribe, Amazon Comprehend and ElasticSearch". It shows a simple AWS architecture of how automatically index audio files uploaded on a S3 bucket. The solution leverages AWS Step Functions, AWS Lambda Amazon, Transcribe, Amazon Comprehend and Amazon ElasticSearch. The code on this repository supports the blog post [Indexing Audios with Amazon Transcribe, Amazon Comprehend and ElasticSearch](CONTRIBUTING.md#security-issue-notifications)
+This repository contains the code supporting the blog post "Indexing Audio with Amazon Transcribe, Amazon Comprehend and ElasticSearch". It shows a simple AWS architecture of how automatically index audio files uploaded on a S3 bucket. The solution leverages AWS Step Functions, AWS Lambda Amazon, Transcribe, Amazon Comprehend and Amazon ElasticSearch. The code on this repository supports the blog post [Indexing Audios with Amazon Transcribe, Amazon Comprehend and ElasticSearch](https://aws.amazon.com/pt/blogs/aws-brasil/indexando-audios-com-amazon-transcribe-amazon-comprehend-e-elasticsearch/)
 
 ## Architecture
 The following architecture was built to index audio files ingested on S3 bucket.  
